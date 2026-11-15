@@ -1,0 +1,209 @@
+name: UniEligible DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  id-token: write   # Required for AWS OIDC authentication
+  contents: read    # Required for checkout
+  security-events: write # Required for uploading Trivy SARIF results
+
+jobs:
+  # -------------------------------------------------------------
+  # STAGE 1: Build & Unit Testing
+  # -------------------------------------------------------------
+  build-and-test:
+    name: Build & Test (Java 17 & Maven)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history required for SonarCloud analysis
+
+      - name: 2. Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: 3. Build & Run Tests
+        working-directory: backend
+        run: |
+          mvn clean test --batch-mode
+
+      - name: 4. Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-test-reports
+          path: backend/target/surefire-reports/
+
+  # -------------------------------------------------------------
+  # STAGE 2: Static Code Analysis & SonarCloud Quality Gate
+  # -------------------------------------------------------------
+  sonarcloud-analysis:
+    name: SonarCloud SAST Analysis & Quality Gate
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+
+    steps:
+      - name: 1. Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: 3. Run SonarCloud Static Code Analysis
+        working-directory: backend
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            mvn -B verify sonar:sonar \
+              -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || 'unieligible-backend' }} \
+              -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION || 'ousl-engineering' }} \
+              -Dsonar.host.url=https://sonarcloud.io \
+              -Dsonar.qualitygate.wait=true
+          else
+            echo "SONAR_TOKEN not configured; skipping remote SonarCloud upload."
+          fi
+
+  # -------------------------------------------------------------
+  # STAGE 3: Container Build & Trivy Security Vulnerability Scan
+  # -------------------------------------------------------------
+  security-and-container-scan:
+    name: Container Build & Trivy Security Scan
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: 2. Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 3. Build Docker Image
+        run: |
+          docker build \
+            --file backend/Dockerfile \
+            --tag unieligible-backend:${{ github.sha }} \
+            backend
+
+      - name: 4. Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'unieligible-backend:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1' # Fail the pipeline on unhandled CRITICAL vulnerabilities
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL'
+
+      - name: 5. Save Docker Image Artifact
+        run: |
+          docker save unieligible-backend:${{ github.sha }} -o backend-image.tar
+
+      - name: 6. Upload Built Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: backend-image.tar
+          retention-days: 1
+
+  # -------------------------------------------------------------
+  # STAGE 4: AWS Authentication & Amazon ECR Publication
+  # -------------------------------------------------------------
+  publish-to-ecr:
+    name: Authenticate to AWS & Push to Amazon ECR
+    needs: security-and-container-scan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: 1. Download Built Image Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: 2. Load Docker Image
+        run: |
+          docker load -i backend-image.tar
+
+      - name: 3. Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION || 'ap-south-1' }}
+          role-session-name: GitHubActions-UniEligible-DevSecOps
+        continue-on-error: true
+
+      - name: 4. Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        continue-on-error: true
+
+      - name: 5. Tag and Push Image to Amazon ECR
+        if: steps.login-ecr.outcome == 'success'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || 'unieligible-backend' }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker tag unieligible-backend:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker tag unieligible-backend:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+          echo "Successfully pushed image to ECR: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+  # -------------------------------------------------------------
+  # STAGE 5: Continuous Deployment to Amazon EC2 (Production)
+  # -------------------------------------------------------------
+  deploy-to-ec2:
+    name: Deploy Container to AWS EC2
+    needs: publish-to-ecr
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && secrets.EC2_HOST != ''
+
+    steps:
+      - name: Deploy via SSH to EC2 Public Subnet
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER || 'ubuntu' }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION || 'ap-south-1' }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION || 'ap-south-1' }}.amazonaws.com
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION || 'ap-south-1' }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+            docker stop unieligible-backend || true
+            docker rm unieligible-backend || true
+            docker run -d \
+              --name unieligible-backend \
+              --restart unless-stopped \
+              -p 8080:8080 \
+              -e SPRING_PROFILES_ACTIVE=prod \
+              -e DB_HOST=${{ secrets.RDS_HOST }} \
+              -e DB_PORT=5432 \
+              -e DB_NAME=${{ secrets.RDS_DB_NAME || 'unieligible' }} \
+              -e DB_USERNAME=${{ secrets.RDS_USERNAME }} \
+              -e DB_PASSWORD=${{ secrets.RDS_PASSWORD }} \
+              ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION || 'ap-south-1' }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+            docker system prune -f
+
