@@ -181,10 +181,13 @@ jobs:
     name: Deploy Container to AWS EC2
     needs: publish-to-ecr
     runs-on: ubuntu-latest
-    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && secrets.EC2_HOST != ''
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
 
     steps:
       - name: Deploy via SSH to EC2 Public Subnet
+        if: ${{ env.EC2_HOST != '' }}
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
