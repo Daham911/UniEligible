@@ -8,11 +8,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8085',
+        target: 'http://3.25.82.234:8080',
         changeOrigin: true,
       },
       '/actuator': {
-        target: 'http://localhost:8085',
+        target: 'http://3.25.82.234:8080',
         changeOrigin: true,
       }
     }
