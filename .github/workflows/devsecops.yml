@@ -112,6 +112,7 @@ jobs:
         with:
           scan-type: 'image'
           image-ref: 'unieligible-backend:${{ github.sha }}'
+          trivyignores: '.trivyignore'
           format: 'table'
           exit-code: '1' # Fail the pipeline on unhandled CRITICAL vulnerabilities
           ignore-unfixed: true
