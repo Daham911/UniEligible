@@ -75,8 +75,8 @@ jobs:
         run: |
           if [ -n "$SONAR_TOKEN" ]; then
             mvn -B verify sonar:sonar \
-              -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || 'unieligible-backend' }} \
-              -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION || 'ousl-engineering' }} \
+              -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || format('{0}_{1}', github.repository_owner, github.event.repository.name) }} \
+              -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION || github.repository_owner }} \
               -Dsonar.host.url=https://sonarcloud.io \
               -Dsonar.qualitygate.wait=true
           else
