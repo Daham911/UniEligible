@@ -2,9 +2,10 @@ name: UniEligible DevSecOps Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
+  workflow_dispatch:
 
 permissions:
   id-token: write   # Required for AWS OIDC authentication
@@ -132,7 +133,7 @@ jobs:
     name: Authenticate to AWS & Push to Amazon ECR
     needs: security-and-container-scan
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
 
     steps:
       - name: 1. Download Built Image Artifact
@@ -180,7 +181,7 @@ jobs:
     name: Deploy Container to AWS EC2
     needs: publish-to-ecr
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && secrets.EC2_HOST != ''
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && secrets.EC2_HOST != ''
 
     steps:
       - name: Deploy via SSH to EC2 Public Subnet
