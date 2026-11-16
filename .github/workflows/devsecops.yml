@@ -100,14 +100,17 @@ jobs:
 
       - name: 3. Build Docker Image
         run: |
-          docker build \
+          docker build --load \
             --file backend/Dockerfile \
             --tag unieligible-backend:${{ github.sha }} \
             backend
 
       - name: 4. Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          scan-type: 'image'
           image-ref: 'unieligible-backend:${{ github.sha }}'
           format: 'table'
           exit-code: '1' # Fail the pipeline on unhandled CRITICAL vulnerabilities
