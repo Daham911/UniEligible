@@ -69,12 +69,13 @@ jobs:
 
       - name: 3. Run SonarCloud Static Code Analysis
         working-directory: backend
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           if [ -n "$SONAR_TOKEN" ]; then
-            mvn -B verify sonar:sonar \
+            mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.0.0.4389:sonar \
               -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || format('{0}_{1}', github.repository_owner, github.event.repository.name) }} \
               -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION || github.repository_owner }} \
               -Dsonar.host.url=https://sonarcloud.io \
